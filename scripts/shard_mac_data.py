@@ -1,11 +1,13 @@
 #!/usr/bin/env python3
-"""Download the OUI master database and split it into 256 JSON shards.
+"""Download the official IEEE MA-L/MA-M/MA-S registries and split them into 256 JSON shards.
 
 Each shard is named after the first two hex characters of the MAC prefix
 (00.json ... ff.json) and maps the full lowercase prefix (hex only, no
-separators) to the vendor name.
+separators) to the organization name.
 """
 
+import csv
+import io
 import json
 import os
 import re
@@ -14,21 +16,23 @@ import time
 import urllib.error
 import urllib.request
 
-SOURCE_URL = (
-    "https://raw.githubusercontent.com/Ringmast4r/OUI-Master-Database/"
-    "master/LISTS/master_oui.min.json"
-)
+# Official IEEE Registration Authority public listings: (url, assignment length in hex characters)
+SOURCES = [
+    ("https://standards-oui.ieee.org/oui/oui.csv", 6),  # MA-L
+    ("https://standards-oui.ieee.org/oui28/mam.csv", 7),  # MA-M
+    ("https://standards-oui.ieee.org/oui36/oui36.csv", 9),  # MA-S
+]
 OUTPUT_DIR = os.path.join(
     os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
     "data",
     "mac-vendors",
 )
 USER_AGENT = "sysadminsuite-data/1.0 (+https://github.com/TimonW-Dev/sysadminsuite-data)"
-MIN_ENTRIES = 10_000  # sanity check so a broken download never overwrites good data
+MIN_ENTRIES = 1_000  # per source; sanity check so a broken download never overwrites good data
 RETRIES = 3
 TIMEOUT = 120
 
-NON_HEX = re.compile(r"[^0-9a-f]")
+HEX = re.compile(r"[0-9a-f]+")
 
 
 def download(url):
@@ -36,38 +40,34 @@ def download(url):
     for attempt in range(1, RETRIES + 1):
         try:
             with urllib.request.urlopen(request, timeout=TIMEOUT) as response:
-                return json.loads(response.read().decode("utf-8"))
-        except (urllib.error.URLError, TimeoutError, json.JSONDecodeError) as exc:
+                return response.read().decode("utf-8-sig")
+        except (urllib.error.URLError, TimeoutError, UnicodeDecodeError) as exc:
             print(f"Attempt {attempt}/{RETRIES} failed: {exc}", file=sys.stderr)
             if attempt == RETRIES:
                 raise
             time.sleep(5 * attempt)
 
 
-def normalize_key(raw_key):
-    return NON_HEX.sub("", raw_key.lower())
-
-
-def vendor_name(entry):
-    if isinstance(entry, str):
-        return entry.strip()
-    if isinstance(entry, dict):
-        name = entry.get("manufacturer") or entry.get("registrant_raw") or ""
-        return str(name).strip()
-    return ""
-
-
-def build_shards(data):
-    shards = {f"{i:02x}": {} for i in range(256)}
+def parse_registry(text, key_length):
+    """Return ({prefix: organization name}, skipped) for one IEEE CSV file."""
+    entries = {}
     skipped = 0
-    for raw_key, entry in data.items():
-        key = normalize_key(raw_key)
-        name = vendor_name(entry)
-        if len(key) < 6 or not name:
+    for row in csv.DictReader(io.StringIO(text)):
+        key = (row.get("Assignment") or "").strip().lower()
+        name = " ".join((row.get("Organization Name") or "").split())
+        if len(key) != key_length or not HEX.fullmatch(key) or not name or name.lower() == "private":
             skipped += 1
             continue
-        shards[key[:2]][key] = name
-    return shards, skipped
+        entries[key] = name
+    return entries, skipped
+
+
+def build_shards(registries):
+    shards = {f"{i:02x}": {} for i in range(256)}
+    for entries in registries:
+        for key, name in entries.items():
+            shards[key[:2]][key] = name
+    return shards
 
 
 def write_shards(shards):
@@ -86,22 +86,22 @@ def write_shards(shards):
 
 
 def main():
-    print(f"Downloading {SOURCE_URL}")
-    data = download(SOURCE_URL)
-    if not isinstance(data, dict) or len(data) < MIN_ENTRIES:
-        size = len(data) if hasattr(data, "__len__") else "?"
-        print(f"Unexpected data (entries: {size}); aborting.", file=sys.stderr)
-        return 1
+    registries = []
+    skipped_total = 0
+    for url, key_length in SOURCES:
+        print(f"Downloading {url}")
+        entries, skipped = parse_registry(download(url), key_length)
+        if len(entries) < MIN_ENTRIES:
+            print(f"Only {len(entries)} usable entries from {url}; aborting.", file=sys.stderr)
+            return 1
+        registries.append(entries)
+        skipped_total += skipped
 
-    shards, skipped = build_shards(data)
+    shards = build_shards(registries)
     total = sum(len(shard) for shard in shards.values())
-    if total < MIN_ENTRIES:
-        print(f"Only {total} usable entries; aborting.", file=sys.stderr)
-        return 1
-
     write_shards(shards)
     non_empty = sum(1 for shard in shards.values() if shard)
-    print(f"Wrote 256 shards to {OUTPUT_DIR} ({total} entries, {non_empty} non-empty, {skipped} skipped).")
+    print(f"Wrote 256 shards to {OUTPUT_DIR} ({total} entries, {non_empty} non-empty, {skipped_total} skipped).")
     return 0
 
 
