@@ -68,7 +68,7 @@ lookupVendor("3C:5A:B4:12:34:56").then(console.log);
 
 The MAC vendor data is derived from the public listings of the IEEE Registration Authority (`standards-oui.ieee.org`). Only the prefix and organization name are stored, addresses are not. Please refer to the linked source of each dataset for its original terms and attribution.
 
-The shards are committed empty (`{}`) and are filled by the first run of the "Sync MAC Vendors" workflow (start it manually via `workflow_dispatch`), then refreshed monthly.
+The shards are committed empty (`{}`) and are filled by the first run of the "Sync MAC Vendors" workflow (start it manually via `workflow_dispatch`), then refreshed weekly (every Sunday).
 
 ## Generate locally
 
