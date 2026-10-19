@@ -18,7 +18,7 @@ Large datasets are split into small JSON files (shards), so the frontend only lo
 
 | Dataset | Path | Description | Source |
 |:--------|:-----|:------------|:-------|
-| MAC vendors | `data/mac-vendors/<xx>.json` | MAC prefix to vendor name, sharded by the first two hex characters | [OUI Master Database](https://github.com/Ringmast4r/OUI-Master-Database) |
+| MAC vendors | `data/mac-vendors/<xx>.json` | MAC prefix to organization name, sharded by the first two hex characters | [IEEE Registration Authority Public Listing](https://standards.ieee.org/products-programs/regauth/) (MA-L, MA-M, MA-S) |
 
 Further datasets are added as additional rows.
 
@@ -27,8 +27,10 @@ Further datasets are added as additional rows.
 Each shard (`00.json` … `ff.json`) maps a lowercase hex prefix (no separators) to a value, for example:
 
 ```json
-{"3c01ef":"Sony","3c5ab4":"Google","3c2eff":"Apple"}
+{"286fb9":"Nokia Shanghai Bell Co., Ltd.","c85ce27":"SYNERGY SYSTEMS AND SOLUTIONS"}
 ```
+
+Keys are 6 (MA-L), 7 (MA-M) or 9 (MA-S) hex characters long. Values are the full organization names as registered with the IEEE. Entries registered as "Private" are omitted.
 
 ## Usage in JavaScript (GitHub CDN)
 
@@ -64,7 +66,9 @@ lookupVendor("3C:5A:B4:12:34:56").then(console.log);
 
 ## Sources and licensing
 
-The data is derived from publicly available sources, for example the public IEEE registries and community projects built on them. Only the data needed by the frontend is stored here. Please refer to the linked source of each dataset for its original license and attribution.
+The MAC vendor data is derived from the public listings of the IEEE Registration Authority (`standards-oui.ieee.org`). Only the prefix and organization name are stored, addresses are not. Please refer to the linked source of each dataset for its original terms and attribution.
+
+The shards are committed empty (`{}`) and are filled by the first run of the "Sync MAC Vendors" workflow (start it manually via `workflow_dispatch`), then refreshed monthly.
 
 ## Generate locally
 
