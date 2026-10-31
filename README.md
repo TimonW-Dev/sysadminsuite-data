@@ -19,6 +19,7 @@ Large datasets are split into small JSON files (shards), so the frontend only lo
 | Dataset | Path | Description | Source |
 |:--------|:-----|:------------|:-------|
 | MAC vendors | `data/mac-vendors/<xx>.json` | MAC prefix to organization name, sharded by the first two hex characters | [IEEE Registration Authority Public Listing](https://standards.ieee.org/products-programs/regauth/) (MA-L, MA-M, MA-S) |
+| Ports and services | `data/ports/{data,index}/<xx>.json` | Port lookup and indexed substring search for service names and descriptions | [IANA Service Name and Transport Protocol Port Number Registry](https://www.iana.org/assignments/service-names-port-numbers/service-names-port-numbers.xhtml) |
 
 Further datasets are added as additional rows.
 
@@ -31,6 +32,53 @@ Each shard (`00.json` … `ff.json`) maps a lowercase hex prefix (no separators)
 ```
 
 Keys are 6 (MA-L), 7 (MA-M) or 9 (MA-S) hex characters long. Values are the full organization names as registered with the IEEE. Entries registered as "Private" are omitted.
+
+### Ports and services
+
+The IANA dataset includes entries with a single port, a port range, or no port, including unnamed, reserved and unassigned entries. It preserves the transport protocol when specified, including TCP, UDP, SCTP and DCCP. A missing protocol is not a match for a protocol-specific lookup; omit the filter to see it. Services without a port are searchable by name or description but cannot appear in a port lookup.
+
+The generator writes 256 files each under `data/ports/data/` and `data/ports/index/`.
+
+Each data shard has the shape below; omitted optional fields are absent rather than empty strings:
+
+```json
+{"version":1,"entries":{"<id>":{"source":"iana","status":"assigned","name":"microsoft-ds","port":445,"protocol":"tcp","description":"Microsoft-DS"}}}
+```
+
+`port` is an integer, an inclusive `[start,end]` range, or `null`. Other IANA fields, when present, are `assignee`, `contact`, `registration_date`, `modification_date`, `reference`, `service_code`, `unauthorized_use_reported` and `notes`. Optional `aliases` and `comments` are arrays of strings reserved for future sources; the current import does not add them. IANA is the only imported source: `source: "iana"` identifies provenance, not proof that a port is assigned or that traffic actually uses the registered service. `status` is `reserved` or `unassigned` when the description is exactly that word, `service-only` for an entry without a port, `assigned` for another entry with a service name, and `other` otherwise. These are lookup classifications, not a substitute for IANA's full assignment policy.
+
+For a port, load `data/<xx>.json`, where `xx` is the lowercase two-digit hexadecimal shard number. For ports below 4096, the number is `floor(port / 32)`; for all others it is `128 + floor((port - 4096) / 480)`. This gives the denser low-numbered ports smaller shards. Filter the entries for that exact port or a range containing it, and optionally for protocol. Ranges are stored compactly and repeated in every shard they intersect. A portless entry is stored in a deterministic shard selected from its ID. IDs are derived from record content and may change when the source changes; distinct duplicate rows retain distinct IDs.
+
+The search index uses case-insensitive ASCII substring matching over the name, description, aliases and comments. Only ASCII `A`–`Z` are folded; all other Unicode codepoints are matched exactly. Search terms must contain at least three Unicode codepoints and cannot be whitespace-only. All matches are returned; no limit is silently applied.
+
+Each `index/<xx>.json` contains `{"version":1,"grams":{"<trigram>":["<shard><id>",...]}}`. Split the normalized query into overlapping three-codepoint substrings. For each trigram, `xx` is the first byte of SHA-256 of its UTF-8 bytes, formatted as two lowercase hex digits. Fetch each distinct index shard once, intersect the posting lists, then fetch each referenced canonical data shard once. References concatenate its two-character shard and 16-character, URL-safe Base64 ID. Finally, verify the entire normalized query occurs in one searchable field: individual trigrams can otherwise yield false positives. This also ensures a range copied into multiple data shards appears only once in search results.
+
+The ready-to-use reference implementation is [`examples/port-lookup.mjs`](examples/port-lookup.mjs). Copy or serve it from an appropriate JavaScript module host and call it with the dataset base URL:
+
+```js
+import { lookupPort, searchPorts } from "./port-lookup.mjs";
+
+const BASE = "https://raw.githubusercontent.com/TimonW-Dev/sysadminsuite-data/main/data/ports";
+console.log(await lookupPort(BASE, 445, "tcp")); // All matching TCP assignments.
+console.log(await lookupPort(BASE, 445));        // All protocols and protocol-free records.
+console.log(await searchPorts(BASE, "microsoft")); // Matches names and descriptions.
+```
+
+Lookups return arrays of records with an `id`; no matches return `[]`. HTTP, malformed-shard, invalid-port, and invalid-search errors are thrown. They do not infer `SMB` for port 445 or `Minecraft` from IANA: aliases and unofficial data can be added by a future source integration.
+
+The search may fetch several index and data shards, particularly for common words. The byte counts measured below are sums of uncompressed JSON response bodies, without HTTP headers, browser cache or compression; they are examples, not upper bounds.
+
+With the IANA registry downloaded on 2026-10-31 (14,544 entries), the reference client measured:
+
+| Lookup | Results | Files | JSON bytes |
+|:-------|--------:|------:|-----------:|
+| Port 445/TCP | 1 | 1 | 16,131 |
+| Port 65535 | 0 | 1 | 532 |
+| `microsoft` | 58 | 28 | 878,872 |
+| `minecraft` | 0 | 7 | 192,431 |
+| `unassigned` | 892 | 129 | 1,908,496 |
+
+The complete generated dataset was 8,891,743 bytes; the original IANA CSV was 1,158,798 bytes. Common searches can exceed the CSV size. Measurements change as IANA data changes.
 
 ## Usage in JavaScript (GitHub CDN)
 
@@ -68,7 +116,7 @@ lookupVendor("3C:5A:B4:12:34:56").then(console.log);
 
 The MAC vendor data is derived from the public listings of the IEEE Registration Authority (`standards-oui.ieee.org`). Only the prefix and organization name are stored, addresses are not. Please refer to the linked source of each dataset for its original terms and attribution.
 
-The shards are committed empty (`{}`) and are filled by the first run of the "Sync MAC Vendors" workflow (start it manually via `workflow_dispatch`), then refreshed weekly (every Sunday).
+The MAC shards are committed empty (`{}`) and are filled by the first run of the "Sync MAC Vendors" workflow (start it manually via `workflow_dispatch`), then refreshed weekly (every Sunday). The IANA port dataset is generated by its workflow and is not initially committed.
 
 ## Generate locally
 
@@ -77,3 +125,14 @@ Run the script of the respective dataset, for example:
 ```sh
 python scripts/shard_mac_data.py
 ```
+
+To test the IANA generator without writing generated data into the repository, specify a temporary output directory:
+
+```sh
+python scripts/shard_port_data.py --output-dir /tmp/iana-ports
+python -m unittest discover -s tests -p 'test_port_data.py' -v
+node tests/benchmark_ports.mjs /tmp/iana-ports
+node tests/verify_iana.mjs /tmp/iana-ports
+```
+
+The tests require Python and Node.js 20 or newer. To use a non-default Node executable, set `NODE` to its path when running the Python tests.

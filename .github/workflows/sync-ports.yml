@@ -1,0 +1,42 @@
+name: Sync IANA Ports
+
+on:
+  schedule:
+    # Once a week, every Sunday 04:00 UTC.
+    - cron: "0 4 * * 0"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: sync-iana-ports
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ssh-key: ${{ secrets.DEPLOY_KEY }}
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Generate IANA port shards
+        run: python scripts/shard_port_data.py
+
+      - name: Commit and push changes
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A data/ports
+          if git diff --cached --quiet; then
+            echo "No changes to commit."
+          else
+            git commit -m "chore(data): update IANA port shards"
+            git push
+          fi
